@@ -1,4 +1,4 @@
-# Mosq_hemocytes
+# Mosq_hemocytes_Ryan_Smith
 Data files contain raw features expression matrix
 Scripts Rmarkdown script anaysis
 
