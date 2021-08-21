@@ -1,0 +1,564 @@
+---
+title: "Sc_hemocytes"
+author: "Mubasher Mohammed"
+date: "21/08/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+```{r}
+library(readr)
+library(readxl)
+library(Seurat)
+library(dplyr)
+library(Matrix)
+library(gtable)
+library(grid)
+library(gridExtra)
+library(rlang)
+library(ggplot2)
+library(tidyr)
+library(plotly)
+library(pheatmap)
+library(tidyverse)
+library(dendextend)
+library(forcats)
+library(stringr)
+library(reshape2)
+library(clusterProfiler)
+library(enrichplot)
+library(org.Pf.plasmo.db)
+```
+
+```{r}
+hem <- read_excel(path = "~/Desktop/Hemocytes/Table S1.xlsx", sheet = 1, col_names = TRUE, trim_ws = TRUE, progress = readxl_progress())
+hem <- as.data.frame(hem)
+hem_metadata <- hem[,(1:4)] ## write.csv 
+hem$status <- NULL
+hem$gating <- NULL
+hem$cluster <- NULL
+rownames(hem) <- hem$cell
+hem$cell <- NULL
+hem_counts <- as.matrix(t(hem))
+rownames(hem_metadata) <- hem_metadata$cell
+ann <- read.csv(file = "~/Desktop/Hemocytes/annotations.csv", header = T, sep = ";")
+
+```
+
+
+
+```{r}
+hem_counts <- read.csv("~/Desktop/Hemocytes/HCT_counts.csv", row.names = 1)
+ann <- read.csv(file = "~/Desktop/Hemocytes/annotations.csv", header = T, sep = ";")
+hem_metadata <- read.csv("~/Desktop/Hemocytes/hem_metadata.csv", row.names = 2)
+hem_metadata$X <- NULL
+total_count_per_cell <- colSums(hem_counts)
+```
+
+
+```{r}
+m <- match(rownames(ds.counts), ann$`Gene ID`)
+ann$unique_gene_name <-  NA 
+ann$unique_gene_name[is.na(ann$`Gene Name or Symbol`)] <- make.unique(as.vector(ann$`Gene ID`[is.na(ann$`Gene Name or Symbol`)]))      
+ann$unique_gene_name[!is.na(ann$`Gene Name or Symbol`)] <- make.unique(as.vector(ann$`Gene Name or Symbol`[!is.na(ann$`Gene Name or Symbol`)]))   
+rownames(ann) <- ann$`Gene ID`
+#####################################
+ds.counts <- ds.counts[intersect(rownames(ds.counts), rownames(ann)), ]
+newnames <- ann[rownames(ds.counts), ]$unique_gene_name
+rownames(ds.counts) <- newnames
+```
+
+```{r}
+######################################  incase you need the gene name + acc No. 
+m <- match(rownames(hem_counts), ann$Gene.ID)
+newnames <- apply(cbind(as.vector(ann$Gene.Name.or.Symbol)[m],rownames(hem_counts)),1,paste,collapse=":")
+rownames(hem_counts)<-newnames
+```
+
+```{r}
+genes.table <- getBM(filters= "ensembl_gene_id", attributes= c("ensembl_gene_id", "gene_biotype", "namespace_1003","name_1006", "description", "interpro_description"), values= rownames(ds.counts), mart= plasmodb)
+#write.table(genes.table,file="data/ILC/gene_name_translation_biotype.tab",sep="\t")
+go.table <- getBM(filters= "ensembl_gene_id", attributes= c("ensembl_gene_id", "definition_1006", "go_id","name_1006", "namespace_1003"), values= rownames(ds.counts), mart= plasmodb)
+
+go.tableBP <- go.table[go.table$namespace_1003=="biological_process",]
+go.name <- paste(go.tableBP$go_id,go.tableBP$name_1006,sep=";")
+go.tableBP$go.name <- go.name
+goBP2gene <- split(go.tableBP$ensembl_gene_id, go.tableBP$go.name)
+#write.table(go.tableBP,file="~/Desktop/DC-toxo dual-SC/gene_name_BP.csv",sep="\t")
+```
+
+```{r}
+ds.ds <- CreateSeuratObject(hem_counts, project = "HCT", assay = "RNA", min.cells = 2, min.features = 10, meta.data = hem_metadata)
+```
+
+
+```{r}
+mito.genes <- rownames(hem_counts)[grep("mito",rownames(hem_counts))]
+head(mito.genes)
+percent.mito <- colSums(hem_counts [mito.genes,]) / total_count_per_cell
+ds.ds <- AddMetaData(ds.ds, percent.mito, "percent.mito")
+VlnPlot(object = ds.ds, c("nCount_RNA", "nFeature_RNA", "percent.mito"), group.by = "orig.ident")
+VlnPlot(object = ds.ds, c("nCount_RNA", "nFeature_RNA", "percent.mito"), group.by = "status")
+VlnPlot(object = ds.ds, c("nCount_RNA", "nFeature_RNA", "percent.mito"), group.by = "gating")
+
+```
+
+```{r}
+custom_fill_colors = c(RColorBrewer::brewer.pal(9, "Oranges")[2], 
+                       RColorBrewer::brewer.pal(9, "Reds")[6], 
+                       RColorBrewer::brewer.pal(9, "Oranges")[3], 
+                       RColorBrewer::brewer.pal(9, "Reds")[7],
+                       RColorBrewer::brewer.pal(9, "Reds")[8],
+                       RColorBrewer::brewer.pal(9, "Oranges")[4],
+                       RColorBrewer::brewer.pal(9, "Reds")[9],
+                       RColorBrewer::brewer.pal(9, "Oranges")[5],
+                       RColorBrewer::brewer.pal(9, "Blues")[4:9])
+custom_fill_colors_2 = c(RColorBrewer::brewer.pal(9, "Blues"))
+```
+
+
+
+```{r}
+ribo.genes <- rownames(hem_counts)[grep("rna",rownames(hem_counts))]
+head(ribo.genes)
+percent.ribo <- colSums(hem_counts [ribo.genes,]) / total_count_per_cell
+ds.ds <- AddMetaData(ds.ds, percent.mito, "percent.ribo")
+VlnPlot(object = ds.ds, c("nCount_RNA", "nFeature_RNA", "percent.ribo"), group.by = "orig.ident")
+VlnPlot(object = ds.ds, c("nCount_RNA", "nFeature_RNA", "percent.ribo"), group.by = "status")
+VlnPlot(object = ds.ds, c("nCount_RNA", "nFeature_RNA", "percent.ribo"), group.by = "gating")
+```
+
+
+```{r}
+cowplot::plot_grid(ncol = 3,
+FeatureScatter(ds.ds, "nCount_RNA", "nFeature_RNA", group.by = "status", pt.size = .5),
+FeatureScatter(ds.ds, "percent.mito", "nFeature_RNA", group.by = "gating", pt.size = .5),
+FeatureScatter(ds.ds, "percent.ribo", "nFeature_RNA", group.by = "gating", pt.size = .5),
+#FeatureScatter(ds.ds, "percent.ribo", "percent.mito", group.by = "Groups", pt.size = .5)
+)
+```
+
+
+```{r}
+feats <- c("nFeature_RNA","nCount_RNA","percent.mito","percent.ribo")
+cowplot::plot_grid(ncol = 1, 
+VlnPlot(ds.ds, group.by= "status", features = feats, pt.size = 0.1,ncol = 4) + NoLegend())
+```
+
+```{r}
+#Compute the relative expression of each gene per cell
+rel_expression <- t( t(ds.ds@assays$RNA@counts) / Matrix::colSums(ds.ds@assays$RNA@counts)) * 100
+most_expressed <- sort(Matrix::rowSums( rel_expression ),T)[20:1] / ncol(ds.ds@meta.data)
+
+par(mfrow=c(1,2),mar=c(4,6,1,1))
+boxplot( as.matrix(t(rel_expression[names(most_expressed),])),cex=.1, las=1, xlab="% total count per cell",col=scales::hue_pal()(20)[20:1],horizontal=TRUE)
+```
+
+# scatterplot with detected genes vs counts
+```{r}
+FeatureScatter(object = ds.ds, feature1 = "nCount_RNA", feature2 = "nFeature_RNA", group.by = "gating", pt.size = 2)
+```
+
+
+```{r}
+ds.ds <- NormalizeData(object = ds.ds, normalization.method = "LogNormalize",
+scale.factor = 1e5)
+```
+
+```{r}
+ds.ds <- FindVariableFeatures(object = ds.ds, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.05, x.high.cutoff = 4, y.cutoff = 0.5)
+top10 <- head(VariableFeatures(ds.ds), 10)
+LabelPoints(plot = VariableFeaturePlot(ds.ds), points = top10, repel = TRUE)
+LabelPoints(plot = VariableFeaturePlot(ds.ds), points = top10, repel = TRUE, xnudge = 0, ynudge = 0)
+ds.ds <- ScaleData(object = ds.ds, vars.to.regress = c("nCount_RNA", "nFeature_RNA"))
+
+```
+
+
+## identifying list of variable genes for each Timepoint/cluster
+
+```{r}
+ds.ds.list <- SplitObject(ds.ds, split.by = "gating")
+for (i in 1:length(ds.ds.list)) {
+ds.ds.list[[i]] <- NormalizeData(ds.ds.list[[i]], verbose = FALSE)
+ds.ds.list[[i]] <- FindVariableFeatures(ds.ds.list[[i]], selection.method = "vst", nfeatures = 2000,verbose = FALSE)}
+hvgs_per_dataset <- lapply(ds.ds.list, function(x) { x@assays$RNA@var.features })
+venn::venn(hvgs_per_dataset,opacity = .4,zcolor = scales::hue_pal()(3),cexsn = 1,cexil = 1,lwd=1,col="white",frame=F,borders = NA, ilcs = 1)
+```
+
+```{r}
+ds.ds.list <- SplitObject(ds.ds, split.by = "status")
+for (i in 1:length(ds.ds.list)) {
+ds.ds.list[[i]] <- NormalizeData(ds.ds.list[[i]], verbose = FALSE)
+ds.ds.list[[i]] <- FindVariableFeatures(ds.ds.list[[i]], selection.method = "vst", nfeatures = 2000,verbose = FALSE)}
+hvgs_per_dataset <- lapply(ds.ds.list, function(x) { x@assays$RNA@var.features })
+venn::venn(hvgs_per_dataset,opacity = .4,zcolor = scales::hue_pal()(3),cexsn = 1,cexil = 1,lwd=1,col="white",frame=F,borders = NA)
+
+```
+
+```{r}
+HVFInfo(object = ds.ds[["RNA"]], selection.method = 'vst')[1:5, ]
+
+```
+
+
+```{r}
+ds.ds <- ScaleData(ds.ds, verbose = FALSE,assay = "RNA")
+ds.ds <- RunPCA(ds.ds, npcs = 50, verbose = FALSE, assay = "RNA", reduction.name = "PCA_on_RNA", seed.use=42)
+ds.ds <- RunUMAP(ds.ds, reduction = "PCA_on_RNA", dims = 1:20,reduction.name = "UMAP_on_RNA")
+ds.ds <- RunTSNE(ds.ds, reduction = "PCA_on_RNA", dims = 1:20,reduction.name = "TSNE_on_RNA")
+
+
+ds.ds <- RunTSNE(ds.ds, reduction = "PCA_on_RNA", dims = 1:20,reduction.name = "TSNE_on_RNA")
+
+```
+
+```{r}
+head(Embeddings(ds.ds, reduction = "PCA_on_RNA")[, 1:5])
+head(Loadings(ds.ds, reduction = "PCA_on_RNA")[, 1:5])
+head(Stdev(ds.ds, reduction = "PCA_on_RNA"))
+ProjectDim(ds.ds, reduction = "PCA_on_RNA")
+```
+
+# If you wold like to observe genes that are strongly correlated with the PC1-2-3 coordinate
+No. of genes to plot =30 No. of cells to plot 10 in each PC
+```{r}
+DimHeatmap(ds.ds, dims = c(1,2,3), nfeatures = 30, cells = 10, reduction = "PCA_on_RNA", disp.min = -2.5, disp.max = NULL, balanced = TRUE, projected = FALSE, ncol = NULL, fast = TRUE, raster = TRUE, slot = "scale.data", assays = "RNA", combine = TRUE)
+```
+
+Explore how the PC dimensions is distributed across timepoints
+```{r}
+VlnPlot(ds.ds, features = "PC_1", group.by = "gating")
+VlnPlot(ds.ds, features = "PC_2", group.by = "gating")
+VlnPlot(ds.ds, features = "PC_3", group.by = "gating")
+```
+
+
+```{r}
+#play around withe the parameters
+ds.ds <- RunTSNE(ds.ds, reduction = "PCA_on_RNA", seed.use = 1, dim.embed = 2, reduction.name = "TSNE_on_PCA")
+ds.ds <- RunTSNE(ds.ds, reduction = "PCA_on_RNA", seed.use = 1, dim.embed = 1, reduction.name = "TSNE_on_PCA")
+
+
+
+DimPlot(ds.ds, reduction = "TSNE_on_PCA", group.by = "cluster", pt.size = 2)
+
+```
+
+```{r}
+DimPlot(ds.ds, pt.size = 3, reduction = "UMAP_on_RNA", group.by = "gating")
+DimPlot(ds.ds, pt.size = 3, reduction = "UMAP_on_PCA", group.by = "gating")
+DimPlot(ds.ds, pt.size = 3, reduction = "UMAP_on_PCA", group.by = "status")
+```
+
+UMAP-TSNE-PCA
+
+```{r}
+DimPlot(ds.ds, dims = c(1, 2), cells = NULL, cols = NULL, pt.size = 4, reduction = "PCA_on_RNA", group.by = "Timepoint", split.by = NULL, shape.by = NULL, order = TRUE, label = TRUE, label.size = 8, repel = TRUE, cells.highlight = NULL, cols.highlight = "#DE2D26", sizes.highlight = 2, na.value = "grey50", combine = TRUE, ncol = NULL)
+DimPlot(ds.ds, dims = c(1, 3), cells = NULL, cols = NULL, pt.size = 4, reduction = "PCA_on_RNA", group.by = "Timepoint", split.by = NULL, shape.by = NULL, order = TRUE, label = TRUE, label.size = 8, repel = TRUE, cells.highlight = NULL, cols.highlight = "#DE2D26", sizes.highlight = 2, na.value = "grey50", combine = TRUE, ncol = NULL)
+DimPlot(ds.ds, dims = c(1, 1), cells = NULL, cols = NULL, pt.size = 4, reduction = "TSNE_on_PCA", group.by = "Timepoint", split.by = NULL, shape.by = NULL, order = TRUE, label = TRUE, label.size = 8, repel = TRUE, cells.highlight = NULL, cols.highlight = "#DE2D26", sizes.highlight = 2, na.value = "grey50", combine = TRUE, ncol = NULL)
+DimPlot(ds.ds, dims = c(1, 2), cells = NULL, cols = NULL, pt.size = 4, reduction = "TSNE_on_PCA", group.by = "Timepoint", split.by = NULL, shape.by = NULL, order = TRUE, label = TRUE, label.size = 8, repel = TRUE, cells.highlight = NULL, cols.highlight = "#DE2D26", sizes.highlight = 2, na.value = "grey50", combine = TRUE, ncol = NULL)
+DimPlot(ds.ds, dims = c(1, 3), cells = NULL, cols = NULL, pt.size = 4, reduction = "PCA_on_RNA", group.by = "Groups", split.by = NULL, shape.by = NULL, order = TRUE, label = TRUE, label.size = 8, repel = TRUE, cells.highlight = NULL, cols.highlight = "#DE2D26", sizes.highlight = 2, na.value = "grey50", combine = TRUE, ncol = NULL)
+DimPlot(ds.ds, dims = c(1, 2), cells = NULL, cols = NULL, pt.size = 4, reduction = "TSNE_on_PCA", group.by = "Groups", split.by = NULL, shape.by = NULL, order = TRUE, label = TRUE, label.size = 8, repel = TRUE, cells.highlight = NULL, cols.highlight = "#DE2D26", sizes.highlight = 2, na.value = "grey50", combine = TRUE, ncol = NULL)
+
+```
+
+
+```{r}
+VizDimLoadings(ds.ds, dims = 1:3, reduction = "PCA_on_RNA",ncol = 5,balanced = T)
+```
+
+```{r}
+ElbowPlot(ds.ds, reduction = "PCA_on_RNA", ndims = 30)
+```
+
+
+
+```{r}
+ds.ds@meta.data$cluster <- plyr::mapvalues(ds.ds@meta.data$cluster, c('1','2','3','4','5','6','7','8') , c('C_1','C_2','C_3','C_4','C_5','C_6','C_7','C_8'))
+
+col_clus <- setNames(c('orange3','lightgreen','lightblue','violet', 'darkred','brown1', 'green','magenta3' ), c('C_1','C_2','C_3','C_4','C_5','C_6','C_7','C_8'))
+DimPlot(ds.ds, reduction = "TSNE_on_PCA", group.by = "cluster", pt.size = 2, cols = col_clus)
+```
+
+
+cluster the cells
+```{r}
+ds.ds <- FindNeighbors(ds.ds, reduction = "TSNE_on_PCA", dims = 1:2)
+ds.ds <- FindClusters(ds.ds, resolution = 0.8) #0.8 default  seq(0.1,2,0.1)
+head(Idents(ds.ds), 10)
+ds.ds@meta.data$seurat_clusters <- ds.ds@meta.data$cluster
+Idents(ds.ds) <- "seurat_clusters"
+DimPlot(ds.ds, reduction = "TSNE_on_PCA", group.by = "seurat_clusters", label = T, cols = col_clus)
+DimPlot(ds.ds, reduction = "TSNE_on_PCA", group.by = "cluster", label = T, cols = col_clus)
+new.cluster.ids <- c('C_1','C_2','C_3','C_4','C_5','C_6','C_7','C_8')
+names(new.cluster.ids) <- levels(ds.ds)
+ds.ds <- RenameIdents(ds.ds, new.cluster.ids)
+```
+
+
+find markers for each cluster
+```{r}
+c1.markers <- FindMarkers(ds.ds, ident.1 = "C_1", min.pct = 0.25, only.pos = F)
+c2.markers <- FindMarkers(ds.ds, ident.1 = "C_2", min.pct = 0.25, only.pos = F)
+c3.markers <- FindMarkers(ds.ds, ident.1 = "C_3", min.pct = 0.25, only.pos = F)
+c4.markers <- FindMarkers(ds.ds, ident.1 = "C_4", min.pct = 0.25, only.pos = F)
+c5.markers <- FindMarkers(ds.ds, ident.1 = "C_5", min.pct = 0.25, only.pos = F)
+c6.markers <- FindMarkers(ds.ds, ident.1 = "C_6", min.pct = 0.25, only.pos = F)
+c7.markers <- FindMarkers(ds.ds, ident.1 = "C_7", min.pct = 0.25, only.pos = F)
+c8.markers <- FindMarkers(ds.ds, ident.1 = "C_8", min.pct = 0.25, only.pos = F)
+```
+
+```{r}
+c1.markers_mm <- FindMarkers(ds.ds, ident.1 = "C_1", min.pct = 0.80, only.pos = T)
+```
+
+
+find markers for every cluster compare to all remaing cells
+```{r}
+ds.ds.markers <- FindAllMarkers(ds.ds, only.pos = F, logfc.threshold = 0.25, test.use = "wilcox", min.pct = 0.25)
+EnhancedVolcano(ds.ds.markers, lab = ds.ds.markers$gene, x="avg_logFC", y="p_val_adj", labSize = 3, legendPosition = "right", legendLabels = c("Not Sig", "log2FC", "p-value", "p-value & log2FC"))
+ds.ds.markers %>% group_by(cluster) %>% top_n(n = 2, wt = avg_logFC) #top 50 up-regulated genes
+```
+
+convert to genes acc no for GO analysis 
+```{r}
+mm <- match(rownames(ds.ds.markers), ann$unique_gene_name)
+ann$unique_gene_name_2 <-  NA
+ann$unique_gene_name_2[is.na(ann$`Gene ID`)] <- make.unique(as.vector(ann$`Gene ID`[is.na(ann$`Gene ID`)]))
+ann$unique_gene_name_2[!is.na(ann$`Gene ID`)] <- make.unique(as.vector(ann$`Gene ID`[!is.na(ann$`Gene ID`)]))
+rownames(ann) <- ann$unique_gene_name
+ds.ds.markers <- ds.ds.markers[intersect(rownames(ds.ds.markers), rownames(ann)), ]
+newnames_2 <- ann[rownames(ds.ds.markers), ]$unique_gene_name_2
+rownames(ds.ds.markers) <- newnames_2
+```
+
+
+```{r}
+gene_data <- data.frame(t(as.matrix(ds.ds@assays$RNA@data)),cluster=ds.ds$seurat_clusters,check.names = F)
+average_data <- aggregate(.~cluster, gene_data, mean)
+cluster_name <- average_data[,1]
+average_data <- apply(average_data[,2:ncol(average_data)],2,as.numeric)
+rownames(average_data) <- cluster_name
+average_data <- t(average_data)
+phmat1 <- t(scale(t(average_data)))
+```
+
+subsetting the seurat object to remove cluster 1 from downstream analysis
+
+```{r}
+Idents(ds.ds) <- "seurat_clusters"
+hct_sub <- subset(ds.ds, idents = c("C_2", "C_3", "C_4", "C_5", "C_6", "C_7", "C_8"))
+```
+
+
+```{r}
+
+hct_genes <- c("NimB2:AGAP029054","null:AGAP000305","ND1:AGAP028389","ND2:AGAP028360","tRNA-Ser:AGAP028377", "LRIM15:AGAP007045", "SCRPQ2:AGAP010133", "SCRASP1:AGAP005625", "null:AGAP006745", "LRIM16A:AGAP028028", "null:AGAP002506", "SCRB9:AGAP004846", "SCRB3:AGAP005725", "Gr9:AGAP009805", "PPO1:AGAP002825")
+
+Dro_genes <- c("null:AGAP007256","null:AGAP002238","HPX4:AGAP007237","SCRPQ2:AGAP010133","null:AGAP029055", "null:AGAP012386", "null:AGAP009200", "null:AGAP009066", "null:AGAP009763", "PPO1:AGAP002825", "null:AGAP002506")
+
+Mos_hct_genes <- c("null:AGAP009231","Rpn3:AGAP009082","SRPN6:AGAP009212","LRIM16A:AGAP028028","null:AGAP011119", "SCRASP1:AGAP005625", "SRPN10:AGAP005246", "LRIM15:AGAP007045", "null:AGAP004877", "null:AGAP011230", "null:AGAP011765", "LL3:AGAP009053", "null:AGAP007314")
+
+
+PPOs <- c("PPO6:AGAP004977","PPO2:AGAP006258","PPO9:AGAP004978","PPO5:AGAP012616","PPO4:AGAP004981", "PPO8:AGAP004976", "PPO1:AGAP002825", "PPO3:AGAP004975")
+
+imm_genes <- c("null:AGAP012307","null:AGAP011964","null:AGAP010177","AP7862:AGAP007809", "null:AGAP005674", "RpL22:AGAP005046", "null:AGAP004902", "null:AGAP002250", "null:AGAP001690", "NA:AGAP001678", "null:AGAP001470", "Cp1:AGAP011828", "null:AGAP000092", "null:AGAP007563", "RpL9:AGAP009508", "RpL36:AGAP002921", "COX3:AGAP028371", "CYTB:AGAP028387") #, "LSU_rRNA_eukarya:AGAP029036")
+
+DotPlot(hct_sub, features = hct_genes, group.by = "seurat_clusters", cols = c("blue", "green"), dot.scale = 15)+ xlab("Genes") + ylab("Clusters") + theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+DotPlot(hct_sub, features = Dro_genes, group.by = "seurat_clusters", cols = c("blue", "green"), dot.scale = 15)+ xlab("Genes") + ylab("Clusters") + theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+DotPlot(hct_sub, features = Mos_hct_genes, group.by = "seurat_clusters", cols = c("blue", "green"), dot.scale = 15)+ xlab("Genes") + ylab("Clusters") + theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+
+DotPlot(hct_sub, features = PPOs, group.by = "seurat_clusters", cols = c("blue", "green"), dot.scale = 15)+ xlab("Genes") + ylab("Clusters") + theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+DotPlot(hct_sub, features = imm_genes, group.by = "seurat_clusters", cols = c("blue", "green"), dot.scale = 15)+ xlab("Genes") + ylab("Clusters") + theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+
+
+pheatmap(phmat1[as.character(na.omit(imm_genes)) ,c("C_2","C_3","C_4","C_5","C_6","C_7", "C_8")], cluster_rows = T, cluster_cols = F, cellheight = 10, cellwidth = 13, breaks = myBreaks, fontsize_col = 7, fontsize_row = 7, angle_col = 45)
+DotPlot(hct_sub, features = imm_genes, group.by = "seurat_clusters", cols = c("blue", "green"), dot.scale = 8)+ xlab("Genes") + ylab("Clusters") + theme(axis.text.x = element_text(angle = 45, hjust=1))
+meosis_genes <- c("DOZI","NEK2","PlasMei2","NEK4","DMC1","TRZ", "MDV1", "P48/45", "GEX1", "MISFIT", "CITH")
+myBreaks <- seq(-1.5, 1.5, length.out=101)
+pheatmap(phmat1[sex_genes, ], cluster_rows = T, cluster_cols = F, cellheight = 10, cellwidth = 20, breaks = myBreaks, fontsize_col = 10, fontsize_row = 10, angle_col = 45, color = colorRampPalette(c("#440154" ,"#21908C", "#FDE725"))(100))
+pheatmap(phmat1[as.character(na.omit(sex_genes)) ,c('0','1','2','3','4','5','6')], cluster_rows = T, cluster_cols = F, cellheight = 10, breaks = myBreaks, fontsize_col = 15, fontsize_row = 10, angle_col = 45, color = colorRampPalette(c("#440154" ,"#21908C", "#FDE725"))(100))
+```
+
+
+```{r}
+Cellcycle_genes <- read_excel("~/Desktop/Hemocytes/Cellcycle_genes.xlsx")
+cc_genes <- Cellcycle_genes$`Gene ID`
+
+m <- match(cc_genes, ann$Gene.ID)
+newnames <- apply(cbind(as.vector(ann$Gene.Name.or.Symbol)[m],cc_genes),1,paste,collapse=":")
+cc_genes <-newnames
+
+
+ds.ds <- CellCycleScoring(ds.ds, s.features = cc_genes, g2m.features = cc_genes, set.ident = TRUE)
+ds.ds@meta.data$cc.score = ds.ds@meta.data$S.Score
+VlnPlot(ds.ds, c("cc.score"), group.by = "seurat_clusters", cols = col_clus)
+VlnPlot(ds.ds, c("cc.score"), group.by = "status", cols = c("grey", "red"))
+FeaturePlot(ds.ds, c("cc.score"), cols = c("grey", "red"), reduction = "TSNE_on_PCA")
+
+VlnPlot(ds.ds, c("cc.score"), group.by = "seurat_clusters",  split.by = "status", cols = c("grey", "red"))
+
+```
+
+
+```{r}
+reddi <- c("AGAP000035", "AGAP004936", "AGAP011828", "AGAP004017", "AGAP009201", "AGAP028064", "AGAP005363", "AGAP004962", "AGAP007855", "AGAP007318", "AGAP009053", "AGAP001002", "AGAP007347", "AGAP000693", "AGAP004981", "AGAP011369", "AGAP003473", "AGAP004674", "AGAP004203", "AGAP001065", "AGAP007940", "AGAP009526", "AGAP001622", "AGAP006181")
+
+m <- match(reddi, ann$Gene.ID)
+newnames <- apply(cbind(as.vector(ann$Gene.Name.or.Symbol)[m],reddi),1,paste,collapse=":")
+reddi <-newnames
+
+DotPlot(hct_sub, features = reddi, group.by = "seurat_clusters", cols = c("blue", "green"), dot.scale = 15)+ xlab("Genes") + ylab("Clusters") + theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+FeaturePlot(hct_sub, reduction = "TSNE_on_PCA",dims = 1:2, features = reddi,ncol = 4,order = T, cols = c("grey", "red"))
+
+
+markers <- c("AGAP004846", "AGAP004978")
+m <- match(markers, ann$Gene.ID)
+newnames <- apply(cbind(as.vector(ann$Gene.Name.or.Symbol)[m],markers),1,paste,collapse=":")
+markers <-newnames
+
+
+FeaturePlot(hct_sub, reduction = "TSNE_on_PCA",dims = 1:2, features = markers,order = T, cols = c("grey", "red"), pt.size = 1.5)
+
+```
+
+Tsne markers 
+
+```{r}
+tSNE_markers <- read_excel("~/Desktop/Hemocytes/Figs/tSNE_markers.xlsx")
+markers <- tSNE_markers$`Gene ID`
+
+m <- match(markers, ann$Gene.ID)
+newnames <- apply(cbind(as.vector(ann$Gene.Name.or.Symbol)[m],markers),1,paste,collapse=":")
+markers <-newnames
+
+FeaturePlot(hct_sub, reduction = "TSNE_on_PCA",dims = 1:2, features = markers,ncol = 4,order = T, cols = c("grey", "red"))
+
+
+DotPlot(hct_sub, features = markers, group.by = "seurat_clusters", cols = c("blue", "green"), dot.scale = 15)+ xlab("Genes") + ylab("Clusters") + theme(axis.text.x = element_text(angle = 45, hjust=1))
+
+```
+
+```{r}
+Cluster_1 <- read_excel("~/Desktop/Hemocytes/Figs/Cluster_1.xlsx")
+markers <- Cluster_1$`Gene ID`
+
+m <- match(markers, ann$Gene.ID)
+newnames <- apply(cbind(as.vector(ann$Gene.Name.or.Symbol)[m],markers),1,paste,collapse=":")
+markers <-newnames
+
+DotPlot(hct_sub, features = markers, group.by = "seurat_clusters", cols = c("blue", "green"), dot.scale = 15)+ xlab("Genes") + ylab("Clusters") + theme(axis.text.x = element_text(angle = 45, hjust=1))
+```
+
+
+```{r}
+top20_z <- c()
+
+for(i in c("C_1","C_2","C_3","C_4","C_5","C_6","C_7", "C_8")){
+
+  genetmp <- ds.ds.markers$gene[ds.ds.markers$cluster==i][1:20]
+
+  top20_z <- c(top20_z, genetmp)
+
+}
+
+```
+
+loading target gene lists for heatmaps
+```{r}
+ap2ox <- Oenocytoid %>% remove_rownames() %>% column_to_rownames(var = "Gene ID")
+head.matrix(ap2ox)
+```
+
+```{r}
+ap2ox <- t(scale(t(ap2ox)))
+```
+
+
+```{r}
+pheatmap(ap2ox, scale = "row", method = "spearman.complete.obs", fontsize_col =15, cluster_cols =FALSE)
+pheatmap(ap2ox, scale = "row", method = "spearman.complete.obs", fontsize_col =15, cluster_cols =FALSE, cellheight = 15)
+pheatmap(ap2ox, scale = "row", method = "spearman.complete.obs", fontsize_col =15, cluster_cols =FALSE, cellwidth = 15, fontsize_row = 7, cellheight = 15, color = colorRampPalette(c("grey", "white", "darkred", "firebrick"))(50))
+#######################################################################################
+pheatmap(ap2ox, scale = "row", method = "spearman.complete.obs", fontsize_col =15, cluster_cols =FALSE, cellwidth = 13, fontsize_row = 7, cellheight = 15, color = colorRampPalette(c("grey", "white", "darkred", "firebrick4"))(70))
+
+pheatmap(ap2ox, scale = "row", method = "spearman.complete.obs", fontsize_col =15, cluster_cols =FALSE, cellwidth = 13, fontsize_row = 5, color = colorRampPalette(c("navy", "white", "firebrick3")) (50))
+```
+
+```{r}
+makeColorRampPalette <- function(colors, cutoff.fraction, num.colors.in.palette)
+{
+  stopifnot(length(colors) == 4)
+  ramp1 <- colorRampPalette(colors[-3:-1])(num.colors.in.palette * cutoff.fraction)
+  ramp2 <- colorRampPalette(colors[0:3])(num.colors.in.palette * (1 - cutoff.fraction))
+  return(c(ramp1, ramp2))
+}
+
+cutoff.distance <- 0  
+cols <- makeColorRampPalette(c("grey", "white", "white", "darkred"),     # distances 0 to 3 colored from white to red
+                            # distances 3 to max(distmat) colored from green to black
+                             cutoff.distance / max(ap2ox),
+                             3)
+```
+
+```{r}
+myBreaks <- seq(-1.5, 1.5, length.out=101)
+```
+
+
+```{r}
+pheatmap(ap2ox, scale = "row", method = "spearman.complete.obs", clustering_distance_rows = "euclidean", breaks = myBreaks, cluster_cols = FALSE, cellwidth = 13, cellheight = 15, fontsize_col = 15, fontsize_row = 7)
+
+
+pheatmap(ap2ox, scale = "row", method = "spearman.complete.obs", clustering_distance_rows = "euclidean", breaks = myBreaks, cluster_cols = FALSE, cellwidth = 13, cellheight = 15, fontsize_col = 15, fontsize_row = 7,colorRampPalette(c("grey", "white", "darkred", "firebrick4"))(100))
+```
+
+```{r}
+pheatmap(ap2ox, breaks = myBreaks, scale = "row", clustering_method = "average", methd="spearman", cluster_cols = FALSE, cellwidth = 13, cellheight = 7, fontsize_col = 15, fontsize_row = 7)
+```
+
+```{r}
+pheatmap(ap2ox, scale = "row", method = "spearman.complete.obs", clustering_distance_rows = "euclidean", breaks = myBreaks, cluster_cols = FALSE, cellwidth = 13, cellheight = 15, fontsize_col = 15, fontsize_row = 7,colorRampPalette(c("lightblue", "white", "darkred", "firebrick"))(100))
+pheatmap(ap2ox, scale = "row", method = "spearman.complete.obs", clustering_distance_rows = "euclidean", breaks = myBreaks, cluster_cols = FALSE, cellwidth = 13, cellheight = 15, fontsize_col = 15, fontsize_row = 7,colorRampPalette(c("grey", "white", "darkred", "firebrick4"))(120))
+```
+
+```{r}
+saveRDS(ds.ds,"ds.ds.Rmd") #main seurat object
+saveRDS(hct_sub,"hct_sub.Rmd") # subsetted seurat object 
+```
+
+
+
+
+
+
+
